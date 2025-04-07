@@ -84,7 +84,7 @@ impl Indexes {
         // efficient search.
         self.0
             .iter()
-            .find(|index| url.as_str().starts_with(index.url.as_str()))
+            .find(|index| is_url_prefix(&index.url, url))
             .map(|index| &index.url)
     }
 
@@ -94,10 +94,22 @@ impl Indexes {
         // but we could use a trie instead of a HashMap here for more
         // efficient search.
         for index in &self.0 {
-            if url.as_str().starts_with(index.policy_url.as_str()) {
+            if is_url_prefix(&index.policy_url, url) {
                 return index.auth_policy;
             }
         }
         AuthPolicy::Auto
     }
+}
+
+fn is_url_prefix(base: &Url, url: &Url) -> bool {
+    if base.scheme() != url.scheme()
+        || base.host_str() != url.host_str()
+        // FIXME: Handle default ports
+        || base.port() != url.port()
+    {
+        return false;
+    }
+
+    url.path().starts_with(base.path())
 }
