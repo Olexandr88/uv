@@ -105,8 +105,7 @@ impl Indexes {
 fn is_url_prefix(base: &Url, url: &Url) -> bool {
     if base.scheme() != url.scheme()
         || base.host_str() != url.host_str()
-        // FIXME: Handle default ports
-        || base.port() != url.port()
+        || base.port_or_known_default() != url.port_or_known_default()
     {
         return false;
     }
