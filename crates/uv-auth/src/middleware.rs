@@ -436,6 +436,11 @@ impl AuthMiddleware {
         {
             request = credentials.authenticate(request);
             Some(credentials)
+        } else if maybe_index_url.is_some() {
+            // If this is a known index, we fall back to checking for the realm.
+            self.cache()
+                .get_realm(Realm::from(request.url()), credentials.to_username())
+                .or(Some(credentials))
         } else {
             // If we don't find a password, we'll still attempt the request with the existing credentials
             Some(credentials)
@@ -1806,6 +1811,91 @@ mod tests {
         assert_eq!(
             client
                 .get(base_url.join("prefix_2/foo")?)
+                .send()
+                .await?
+                .status(),
+            200,
+            "Requests to other paths with that prefix will also succeed"
+        );
+
+        Ok(())
+    }
+
+    /// Demonstrates that when an index' credentials are cached for its realm, we
+    /// find those credentials if they're not present in the keyring.
+    #[test(tokio::test)]
+    async fn test_credentials_from_keyring_shared_authentication_different_indexes_same_realm(
+    ) -> Result<(), Error> {
+        let username = "user";
+        let password = "password";
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(basic_auth(username, password))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path_regex("/prefix_1.*"))
+            .and(basic_auth(username, password))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let base_url = Url::parse(&server.uri())?;
+        let index_url = base_url.join("prefix_1")?;
+        let indexes = Indexes::from_indexes(vec![Index {
+            url: index_url.clone(),
+            policy_url: index_url.clone(),
+            auth_policy: AuthPolicy::Auto,
+        }]);
+
+        let client = test_client_builder()
+            .with(
+                AuthMiddleware::new()
+                    .with_cache(CredentialsCache::new())
+                    .with_keyring(Some(KeyringProvider::dummy([(
+                        base_url.clone(),
+                        username,
+                        password,
+                    )])))
+                    .with_indexes(indexes),
+            )
+            .build();
+
+        // Index server does not work without a username
+        assert_eq!(
+            client.get(index_url.clone()).send().await?.status(),
+            401,
+            "Requests should require a username"
+        );
+
+        // Send a request that will cache realm credentials.
+        let mut realm_url = base_url.clone();
+        realm_url.set_username(username).unwrap();
+        assert_eq!(
+            client.get(realm_url.clone()).send().await?.status(),
+            200,
+            "The first realm request with a username will succeed"
+        );
+
+        let mut url = index_url.clone();
+        url.set_username(username).unwrap();
+        assert_eq!(
+            client.get(url.clone()).send().await?.status(),
+            200,
+            "A request with the same username and realm for a URL will use the realm if there is no index-specific password"
+        );
+        assert_eq!(
+            client
+                .get(base_url.join("prefix_1/foo")?)
                 .send()
                 .await?
                 .status(),
